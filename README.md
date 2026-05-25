@@ -83,8 +83,6 @@ Google Drive's HTML class names are obfuscated (e.g. `VfPpkd-LgbsSe-OWXEXe-dgl2H
 
 Instead, the content script reads the **visible text** in likely progress-panel containers and matches against simple regexes like `/uploading/i` and `/upload complete/i`. Text labels are much more stable across Drive's redesigns.
 
-The tradeoff: localization. If your Drive UI is in Hindi, Spanish, or any non-English language, you'll need to add a regex for the local phrase. See [Contributing](#contributing) below.
-
 ---
 
 ## Debugging
@@ -98,14 +96,14 @@ If notifications aren't firing, here's how to figure out why:
    ```
 3. Start an upload or download. You should see log lines like:
    ```
-   [DriveNotifier] upload -> active
-   [DriveNotifier] upload active -> done
-   [DriveNotifier] notifying upload
+   [DriveAlter] upload -> active
+   [DriveAlter] upload -> done (saw "complete" text)
+   [DriveAlter] NOTIFY upload success
    ```
-4. If you see `notifying upload` but no notification appears → it's an OS-level notification permission issue (see [First-time setup checks](#first-time-setup-checks)).
-5. If you see **no logs at all** → the text-matching patterns aren't matching your Drive's UI. Run this during an active transfer and share the output:
+4. If you see `NOTIFY upload` but no notification appears → it's an OS-level notification permission issue (see [First-time setup checks](#first-time-setup-checks)). On Windows, also check **Focus Assist / Do Not Disturb** — when on, Chrome notifications are silently routed to the Action Center instead of being shown as toasts.
+5. If you see **no logs at all** → the text-matching patterns aren't matching your Drive's UI. Run this during an active transfer and share the output (be aware: it may include file names, scrub anything private before sharing):
    ```js
-   window.__driveNotifierProbe()
+   window.__driveAlterProbe()
    ```
 
 ### Common error: "Extension context invalidated"
@@ -140,22 +138,13 @@ The extension requests only what it needs:
 
 ## Contributing
 
-Pull requests welcome! Especially helpful contributions:
-
-### Adding a language
-If Drive Alter doesn't fire for you because your Drive UI is in a non-English language:
-
-1. Open Drive, start an upload, open DevTools console
-2. Run `window.__driveNotifierProbe()` and copy the `text` field
-3. Find the phrases for "uploading" and "upload complete" in your language
-4. Add the regex to [`content.js`](content.js) under `ACTIVE_PATTERNS` and `DONE_PATTERNS`
-5. Open a PR with the language name in the title
+Pull requests welcome!
 
 ### Reporting bugs
 Open an issue with:
 - Your OS + Chrome version
-- The output of `window.__driveNotifierProbe()` during a failed transfer
-- The console logs (with `__DRIVE_NOTIFIER_DEBUG = true` enabled)
+- The output of `window.__driveAlterProbe()` during a failed transfer (scrub any private file names before posting)
+- The console logs (with `window.__DRIVE_NOTIFIER_DEBUG = true` enabled)
 
 ### Suggesting features
 Open an issue tagged `enhancement`. Keep in mind the project's goal is to stay **tiny and zero-config** — features that need accounts, servers, or settings UIs are unlikely to be accepted.

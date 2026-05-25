@@ -2,22 +2,30 @@
 // when uploads/downloads finish. Strategy:
 //   1. Once per second, scan the page's visible text for progress phrases.
 //   2. Track a state machine per kind: idle -> active -> done.
-//   3. On active -> done, play a chime and tell the service worker to
-//      show an OS-level notification.
+//   3. On a terminal transition, play a chime and tell the service worker
+//      to show an OS-level notification.
 //
 // Why text matching instead of CSS selectors? Drive's class names are
 // obfuscated and change frequently. Text labels are far more stable.
 
 (() => {
+  // Single-frame guard: the content script is only registered for the top
+  // frame in manifest.json now, but this belt-and-suspenders check keeps it
+  // safe if someone flips all_frames back on without thinking.
+  if (window.top !== window) return;
+
   const SCAN_INTERVAL_MS = 1000;
   const NOTIFY_COOLDOWN_MS = 5000;
+  // If 'active' state persists this long without any text transition, force
+  // it back to idle. Prevents a stale "Uploading..." text snapshot from
+  // letting unrelated cancel-clicks suppress later real completions.
+  const ACTIVE_TIMEOUT_MS = 5 * 60 * 1000;
 
   // Patterns are matched against the page's lowercased text.
-  // Add localized variants here if your Drive UI is not in English.
   const ACTIVE_PATTERNS = {
     upload: [
       /\buploading\b/i,
-      /\bupload(s)?\s+in progress/i,
+      /\buploads?\s+in progress/i,
       /\bpreparing\s+(to\s+)?upload/i,
       /\bbacking up\b/i
     ],
@@ -30,13 +38,13 @@
 
   const DONE_PATTERNS = {
     upload: [
-      /\d+\s+upload(s)?\s+complete/i,
+      /\d+\s+uploads?\s+complete/i,
       /\bupload\s+complete\b/i,
       /\bupload\s+finished\b/i,
       /\bupload\s+done\b/i
     ],
     download: [
-      /\d+\s+download(s)?\s+complete/i,
+      /\d+\s+downloads?\s+complete/i,
       /\bdownload\s+complete\b/i,
       /\bdownload\s+finished\b/i,
       /\bready for download\b/i
@@ -48,14 +56,14 @@
   const ERROR_PATTERNS = {
     upload: [
       /\bupload\s+failed\b/i,
-      /\d+\s+upload(s)?\s+failed/i,
+      /\d+\s+uploads?\s+failed/i,
       /\bcouldn['’]?t\s+upload\b/i,
       /\berror\s+uploading\b/i,
       /\bfailed\s+to\s+upload\b/i
     ],
     download: [
       /\bdownload\s+failed\b/i,
-      /\d+\s+download(s)?\s+failed/i,
+      /\d+\s+downloads?\s+failed/i,
       /\bcouldn['’]?t\s+download\b/i,
       /\berror\s+downloading\b/i,
       /\bfailed\s+to\s+download\b/i
@@ -63,26 +71,23 @@
   };
 
   // Phrases Drive shows when the user (or Drive itself) cancels a transfer.
-  // Cancel must be detected explicitly so we can suppress the notification —
-  // both the success fallback ("progress text disappeared") and the rising
-  // edge of "complete" text would otherwise mis-classify a cancel as success.
   const CANCEL_PATTERNS = {
     upload: [
       /\bupload\s+cancell?ed\b/i,
-      /\d+\s+upload(s)?\s+cancell?ed/i,
+      /\d+\s+uploads?\s+cancell?ed/i,
       /\bcancell?ed\s+upload\b/i,
       /\bupload\s+stopped\b/i
     ],
     download: [
       /\bdownload\s+cancell?ed\b/i,
-      /\d+\s+download(s)?\s+cancell?ed/i,
+      /\d+\s+downloads?\s+cancell?ed/i,
       /\bcancell?ed\s+download\b/i,
       /\bdownload\s+stopped\b/i
     ]
   };
 
   // Connection-loss indicators. When seen, an in-progress transfer that
-  // suddenly loses its "uploading…" text should be treated as a failure
+  // suddenly loses its "uploading..." text should be treated as a failure
   // rather than a silent success — Drive often just removes the progress
   // popup when the network drops, without showing an explicit error.
   const OFFLINE_PATTERNS = [
@@ -93,10 +98,14 @@
     /unable to connect/i
   ];
 
-  // Sound toggle, mirrored from chrome.storage.sync. Read once at load and
-  // kept in sync via the onChanged listener. Defaults to enabled — if the
-  // storage read is slow, the first chime might play before the value
-  // arrives, which is the safe direction.
+  // Used to recognise that the user clicked a cancel-shaped control INSIDE
+  // the progress panel (rather than some unrelated "Cancel" button on the
+  // page). The clicked element must have a cancel-like label AND an
+  // ancestor whose text mentions active-transfer wording.
+  const CANCEL_LABEL_RE = /\bcancel(?!l?ed)\b|\bstop(?!ped)\b|\bremove\s+from\s+(upload|download)/i;
+  const PROGRESS_CONTEXT_RE = /uploading|downloading|zipping|backing up|preparing\s+(to\s+)?(upload|download)|\d+\s+(item|file)/i;
+
+  // ─── Sound toggle, mirrored from chrome.storage.sync ────────────────────
   let soundEnabled = true;
   try {
     chrome.storage?.sync?.get({ soundEnabled: true }, (data) => {
@@ -109,35 +118,28 @@
     });
   } catch { /* extension context may be invalidated; soundEnabled stays true */ }
 
+  // ─── State ──────────────────────────────────────────────────────────────
   const state = { upload: 'idle', download: 'idle' };
-  const lastNotifiedAt = { upload: 0, download: 0 };
-  // Previous-tick flags so we can detect the rising edge of done/error text
-  // even when the polling missed the brief "active" phase (small files that
-  // upload in <1s, or page loaded mid-transfer).
+  const activeSince = { upload: 0, download: 0 };
+  // Per-status cooldown so a 'failed' notification doesn't suppress a
+  // legitimate 'success' that follows shortly after (or vice versa).
+  const lastNotifiedAt = {
+    upload:   { success: 0, failed: 0 },
+    download: { success: 0, failed: 0 }
+  };
   const prev = {
     upload:   { done: false, error: false, cancel: false },
     download: { done: false, error: false, cancel: false }
   };
-  // Sticky flag: once we see cancel text for a kind, suppress the next
-  // notification even if the cancel phrase has already disappeared by the
-  // time the "complete" text or empty-toast fallback hits. Cleared when the
-  // kind returns to idle.
   const cancelLatched = { upload: false, download: false };
   let primed = false;
   let intervalId = null;
 
-  // Default: always log state transitions and errors (low volume).
-  // Verbose mode (set window.__DRIVE_NOTIFIER_DEBUG = true) also logs each
-  // tick's matched text.
   function log(...args)  { console.log('[DriveAlter]', ...args); }
   function vlog(...args) { if (window.__DRIVE_NOTIFIER_DEBUG) console.log('[DriveAlter:v]', ...args); }
 
-  log('content script loaded —', window === window.top ? 'top frame' : 'iframe', '—', location.href);
+  log('content script loaded —', location.href);
 
-  // Get all visible page text. document.body.innerText is large (often
-  // 100KB+ on Drive) but regex tests over it are fast (single-digit ms).
-  // This is far more reliable than guessing which container holds the
-  // progress panel, since Drive's DOM structure changes frequently.
   function getPageText() {
     try {
       return (document.body && document.body.innerText) || '';
@@ -150,45 +152,62 @@
     return patterns.some((re) => re.test(text));
   }
 
-  // Generate a short two-note "ding" chime via Web Audio. No file needed.
-  // Runs in the content script because service workers can't play audio
-  // in Manifest V3. May be silenced by Chrome's autoplay policy if the
-  // user hasn't interacted with the Drive tab recently.
+  // ─── Chime ──────────────────────────────────────────────────────────────
+  // Lazy, shared AudioContext. A new ctx per chime would (a) leak under
+  // rapid completions because browsers cap concurrent contexts at ~6 and
+  // (b) hit the autoplay-policy 'suspended' state more often.
+  let sharedCtx = null;
+  function getAudioCtx() {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!sharedCtx || sharedCtx.state === 'closed') sharedCtx = new Ctx();
+    return sharedCtx;
+  }
+
   function playChime() {
     if (!soundEnabled) return;
     try {
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      if (!Ctx) return;
-      const ctx = new Ctx();
-      const now = ctx.currentTime;
-      const playTone = (freq, start, duration) => {
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.type = 'sine';
-        osc.frequency.value = freq;
-        gain.gain.setValueAtTime(0.0001, now + start);
-        gain.gain.exponentialRampToValueAtTime(0.25, now + start + 0.02);
-        gain.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
-        osc.connect(gain).connect(ctx.destination);
-        osc.start(now + start);
-        osc.stop(now + start + duration + 0.05);
+      const ctx = getAudioCtx();
+      if (!ctx) return;
+      const playTones = () => {
+        const now = ctx.currentTime;
+        const playTone = (freq, start, duration) => {
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = 'sine';
+          osc.frequency.value = freq;
+          gain.gain.setValueAtTime(0.0001, now + start);
+          gain.gain.exponentialRampToValueAtTime(0.25, now + start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + start + duration);
+          osc.connect(gain).connect(ctx.destination);
+          osc.start(now + start);
+          osc.stop(now + start + duration + 0.05);
+        };
+        playTone(880, 0, 0.18);
+        playTone(1318.5, 0.16, 0.25);
       };
-      playTone(880, 0, 0.18);
-      playTone(1318.5, 0.16, 0.25);
-      setTimeout(() => ctx.close(), 800);
+      // Chrome's autoplay policy starts the ctx in 'suspended' until the
+      // user has interacted with the page. resume() returns a promise; if
+      // the user hasn't interacted yet, it rejects and we log the reason
+      // so users understand why the chime didn't play.
+      if (ctx.state === 'suspended') {
+        ctx.resume().then(playTones).catch((e) => {
+          log('chime suppressed by autoplay policy (interact with the Drive tab once to enable):', e.message);
+        });
+      } else {
+        playTones();
+      }
     } catch (e) {
       log('chime failed:', e.message);
     }
   }
 
+  // ─── Notify ─────────────────────────────────────────────────────────────
   function notify(kind, status) {
-    if (cancelLatched[kind]) {
-      log('NOTIFY suppressed by cancel latch:', kind, status);
-      return;
-    }
+    if (cancelLatched[kind]) return; // already logged by state machine
     const now = Date.now();
-    if (now - lastNotifiedAt[kind] < NOTIFY_COOLDOWN_MS) return;
-    lastNotifiedAt[kind] = now;
+    if (now - (lastNotifiedAt[kind][status] || 0) < NOTIFY_COOLDOWN_MS) return;
+    lastNotifiedAt[kind][status] = now;
     log('NOTIFY', kind, status);
     playChime();
     try {
@@ -211,9 +230,11 @@
     }
   }
 
+  // ─── Tick ───────────────────────────────────────────────────────────────
   function tick() {
     const text = getPageText().toLowerCase();
     const isOffline = !navigator.onLine || matchesAny(text, OFFLINE_PATTERNS);
+    const tNow = Date.now();
 
     for (const kind of ['upload', 'download']) {
       const isActive = matchesAny(text, ACTIVE_PATTERNS[kind]);
@@ -222,21 +243,12 @@
       const isCancel = matchesAny(text, CANCEL_PATTERNS[kind]);
       vlog(kind, { state: state[kind], isActive, isDone, isError, isCancel, isOffline });
 
-      // Latch cancel as soon as we see it — Drive's cancel toast disappears
-      // quickly and may overlap or be replaced by "complete" text. The latch
-      // is consumed by the next terminal transition for this kind.
       if (isCancel) cancelLatched[kind] = true;
 
-      // Rising-edge detection: fire when done/error text APPEARS on this
-      // tick after being absent on the previous tick. This catches fast
-      // transfers where we never observed the "active" phase. The `primed`
-      // guard suppresses notifications for toasts that were already on the
-      // page when the content script loaded.
       const doneRising   = primed && isDone   && !prev[kind].done;
       const errorRising  = primed && isError  && !prev[kind].error;
       const cancelRising = primed && isCancel && !prev[kind].cancel;
 
-      // Cancel wins over everything — user cancellation never notifies.
       if (cancelRising) {
         state[kind] = 'done';
         log(kind, '-> cancelled (no notification)');
@@ -249,18 +261,13 @@
         log(kind, '-> done (saw "complete" text)');
         notify(kind, 'success');
       } else if (doneRising || errorRising) {
-        // Done/error text appeared but cancel was latched — consume it.
         state[kind] = 'done';
         log(kind, '-> terminal after cancel (no notification)');
       } else if (isActive && state[kind] !== 'active') {
         log(kind, '-> active');
         state[kind] = 'active';
+        activeSince[kind] = tNow;
       } else if (state[kind] === 'active' && !isActive && !isDone && !isError && !isCancel) {
-        // Progress text disappeared while we knew a transfer was active.
-        // Three interpretations:
-        //   - Cancel was latched         -> suppress (user cancelled)
-        //   - Offline / connection lost  -> treat as failure
-        //   - Otherwise                  -> treat as success
         state[kind] = 'done';
         if (cancelLatched[kind]) {
           log(kind, 'active -> cancelled (progress vanished after cancel)');
@@ -274,6 +281,12 @@
       } else if (!isActive && !isDone && !isError && !isCancel && state[kind] === 'done') {
         state[kind] = 'idle';
         cancelLatched[kind] = false;
+      } else if (state[kind] === 'active' && tNow - activeSince[kind] > ACTIVE_TIMEOUT_MS) {
+        // Failsafe: stale active state with no transition observed. Reset
+        // quietly so subsequent click-cancel heuristics don't misfire.
+        log(kind, 'active -> idle (stale; no transition within timeout)');
+        state[kind] = 'idle';
+        cancelLatched[kind] = false;
       }
 
       prev[kind].done   = isDone;
@@ -283,26 +296,41 @@
     primed = true;
   }
 
-  // Detect cancellation from the user's click on Drive's cancel / close
-  // controls in the progress panel. This is necessary because Drive often
-  // removes the toast on cancel WITHOUT showing explicit "cancelled" text,
-  // so text-pattern matching alone can't distinguish a cancel from a real
-  // completion. We only latch for kinds currently in the 'active' state, so
-  // a stray "Cancel" click elsewhere on the page won't suppress a real
-  // completion later.
-  const CANCEL_LABEL_RE = /\bcancel(?!l?ed)\b|\bstop(?!ped)\b|\bremove\s+from\s+(upload|download)/i;
+  // ─── Click-based cancel detection ───────────────────────────────────────
+  // Only latches when the clicked control has a cancel-like label AND lives
+  // inside an ancestor that contains active-transfer text. This prevents
+  // unrelated "Cancel" / "Stop" buttons on the page from suppressing a
+  // legitimate completion that happens to be in flight.
   document.addEventListener(
     'click',
     (e) => {
-      const el = e.target && e.target.closest && e.target.closest('button, [role="button"], [aria-label]');
-      if (!el) return;
-      const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
-      if (!label || !CANCEL_LABEL_RE.test(label)) return;
-      for (const kind of ['upload', 'download']) {
-        if (state[kind] === 'active') {
-          cancelLatched[kind] = true;
-          log(kind, 'cancel latched from click:', label.slice(0, 60));
+      try {
+        const target = e.target;
+        if (!target || typeof target.closest !== 'function') return;
+        const el = target.closest('button, [role="button"], [aria-label]');
+        if (!el) return;
+        const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
+        if (!label || !CANCEL_LABEL_RE.test(label)) return;
+
+        // Walk up to ~8 ancestors looking for progress-panel context.
+        let ancestor = el;
+        let inProgressPanel = false;
+        for (let depth = 0; depth < 8 && ancestor; depth++) {
+          const txt = (ancestor.textContent || '').toLowerCase();
+          if (PROGRESS_CONTEXT_RE.test(txt)) { inProgressPanel = true; break; }
+          ancestor = ancestor.parentElement;
         }
+        if (!inProgressPanel) return;
+
+        for (const kind of ['upload', 'download']) {
+          if (state[kind] === 'active') {
+            cancelLatched[kind] = true;
+            log(kind, 'cancel latched from click:', label.slice(0, 60));
+          }
+        }
+      } catch (err) {
+        // Never let an exception in our handler bubble into Drive's code.
+        vlog('cancel-click handler error:', err && err.message);
       }
     },
     true
@@ -310,23 +338,33 @@
 
   intervalId = setInterval(tick, SCAN_INTERVAL_MS);
 
-  // Manual diagnostic helpers exposed for the console.
+  // ─── Diagnostics ────────────────────────────────────────────────────────
+  // The probe omits raw page text and redacts file-name-shaped fragments
+  // from the relevantLines preview, so users sharing output in bug reports
+  // don't inadvertently leak private file names.
+  function redactLine(line) {
+    // Replace anything that looks like a filename (word + extension) with
+    // <file>. Crude but catches the obvious cases.
+    return line.replace(/\b[\w\-. ]+\.[a-z0-9]{1,8}\b/gi, '<file>');
+  }
+
   window.__driveAlterProbe = () => {
     const text = getPageText();
     const lower = text.toLowerCase();
     const result = {
-      frame: window === window.top ? 'top' : 'iframe',
       url: location.href,
       state: { ...state },
+      cancelLatched: { ...cancelLatched },
       textLength: text.length,
       matched: {},
-      // Show any short lines that mention upload/download so we can see
-      // exactly what wording Drive is using, even if our patterns miss.
+      // File names redacted. If you need raw text for debugging, run
+      // document.body.innerText yourself — and be careful where you paste it.
       relevantLines: text
         .split('\n')
         .map((l) => l.trim())
         .filter((l) => l && l.length < 200 && /upload|download|zipping|backing up/i.test(l))
         .slice(0, 25)
+        .map(redactLine)
     };
     for (const kind of ['upload', 'download']) {
       result.matched[kind] = {
@@ -340,12 +378,14 @@
       navigatorOnline: navigator.onLine,
       matchedOfflineText: OFFLINE_PATTERNS.filter((re) => re.test(lower)).map(String)
     };
+    result.audio = sharedCtx ? { state: sharedCtx.state } : { state: 'not-created' };
     return result;
   };
 
   window.__driveAlterTestNotify = (kind = 'upload', status = 'success') => {
     log('manual test notification:', kind, status);
-    lastNotifiedAt[kind] = 0; // bypass cooldown
+    lastNotifiedAt[kind][status] = 0;
+    cancelLatched[kind] = false;
     notify(kind, status);
   };
 })();
