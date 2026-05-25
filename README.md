@@ -172,6 +172,6 @@ MIT — do whatever you want with it. See `LICENSE` for details.
 
 ## Author
 
-Built by [Keshore Rode](https://github.com/keshorerode).
+Built by [keshorerode](https://github.com/keshorerode).
 
 If this saved you from staring at a progress bar, a GitHub star is appreciated.
