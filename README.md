@@ -131,7 +131,7 @@ The extension requests only what it needs:
 ## Roadmap / ideas
 
 - [x] Sound option (play a chime on completion) — built-in two-note chime
-- [ ] Failed-upload detection (notify if a transfer errors out)
+- [x] Failed-upload detection (notify if a transfer errors out)
 - [ ] Localized text patterns (Hindi, Spanish, French, German, Japanese)
 - [ ] Settings popup (toggle sound, change notification text)
 - [ ] Publish to Chrome Web Store for one-click install

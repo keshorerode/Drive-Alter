@@ -43,8 +43,71 @@
     ]
   };
 
+  // Phrases Drive shows when a transfer fails (network drop, file too big,
+  // out of storage, etc.). Some of these double as the generic error toasts.
+  const ERROR_PATTERNS = {
+    upload: [
+      /\bupload\s+failed\b/i,
+      /\d+\s+upload(s)?\s+failed/i,
+      /\bcouldn['’]?t\s+upload\b/i,
+      /\berror\s+uploading\b/i,
+      /\bfailed\s+to\s+upload\b/i
+    ],
+    download: [
+      /\bdownload\s+failed\b/i,
+      /\d+\s+download(s)?\s+failed/i,
+      /\bcouldn['’]?t\s+download\b/i,
+      /\berror\s+downloading\b/i,
+      /\bfailed\s+to\s+download\b/i
+    ]
+  };
+
+  // Phrases Drive shows when the user (or Drive itself) cancels a transfer.
+  // Cancel must be detected explicitly so we can suppress the notification —
+  // both the success fallback ("progress text disappeared") and the rising
+  // edge of "complete" text would otherwise mis-classify a cancel as success.
+  const CANCEL_PATTERNS = {
+    upload: [
+      /\bupload\s+cancell?ed\b/i,
+      /\d+\s+upload(s)?\s+cancell?ed/i,
+      /\bcancell?ed\s+upload\b/i,
+      /\bupload\s+stopped\b/i
+    ],
+    download: [
+      /\bdownload\s+cancell?ed\b/i,
+      /\d+\s+download(s)?\s+cancell?ed/i,
+      /\bcancell?ed\s+download\b/i,
+      /\bdownload\s+stopped\b/i
+    ]
+  };
+
+  // Connection-loss indicators. When seen, an in-progress transfer that
+  // suddenly loses its "uploading…" text should be treated as a failure
+  // rather than a silent success — Drive often just removes the progress
+  // popup when the network drops, without showing an explicit error.
+  const OFFLINE_PATTERNS = [
+    /you are offline/i,
+    /\bno internet\b/i,
+    /check your connection/i,
+    /couldn['’]?t connect/i,
+    /unable to connect/i
+  ];
+
   const state = { upload: 'idle', download: 'idle' };
   const lastNotifiedAt = { upload: 0, download: 0 };
+  // Previous-tick flags so we can detect the rising edge of done/error text
+  // even when the polling missed the brief "active" phase (small files that
+  // upload in <1s, or page loaded mid-transfer).
+  const prev = {
+    upload:   { done: false, error: false, cancel: false },
+    download: { done: false, error: false, cancel: false }
+  };
+  // Sticky flag: once we see cancel text for a kind, suppress the next
+  // notification even if the cancel phrase has already disappeared by the
+  // time the "complete" text or empty-toast fallback hits. Cleared when the
+  // kind returns to idle.
+  const cancelLatched = { upload: false, download: false };
+  let primed = false;
   let intervalId = null;
 
   // Default: always log state transitions and errors (low volume).
@@ -101,15 +164,19 @@
     }
   }
 
-  function notify(kind) {
+  function notify(kind, status) {
+    if (cancelLatched[kind]) {
+      log('NOTIFY suppressed by cancel latch:', kind, status);
+      return;
+    }
     const now = Date.now();
     if (now - lastNotifiedAt[kind] < NOTIFY_COOLDOWN_MS) return;
     lastNotifiedAt[kind] = now;
-    log('NOTIFY', kind, 'complete');
+    log('NOTIFY', kind, status);
     playChime();
     try {
       chrome.runtime.sendMessage(
-        { type: 'DRIVE_TRANSFER_DONE', kind, url: location.href },
+        { type: 'DRIVE_TRANSFER_DONE', kind, status, url: location.href },
         (response) => {
           if (chrome.runtime.lastError) {
             log('sendMessage error:', chrome.runtime.lastError.message);
@@ -129,28 +196,100 @@
 
   function tick() {
     const text = getPageText().toLowerCase();
+    const isOffline = !navigator.onLine || matchesAny(text, OFFLINE_PATTERNS);
 
     for (const kind of ['upload', 'download']) {
       const isActive = matchesAny(text, ACTIVE_PATTERNS[kind]);
       const isDone = matchesAny(text, DONE_PATTERNS[kind]);
-      vlog(kind, { state: state[kind], isActive, isDone });
+      const isError = matchesAny(text, ERROR_PATTERNS[kind]);
+      const isCancel = matchesAny(text, CANCEL_PATTERNS[kind]);
+      vlog(kind, { state: state[kind], isActive, isDone, isError, isCancel, isOffline });
 
-      if (isDone && state[kind] === 'active') {
+      // Latch cancel as soon as we see it — Drive's cancel toast disappears
+      // quickly and may overlap or be replaced by "complete" text. The latch
+      // is consumed by the next terminal transition for this kind.
+      if (isCancel) cancelLatched[kind] = true;
+
+      // Rising-edge detection: fire when done/error text APPEARS on this
+      // tick after being absent on the previous tick. This catches fast
+      // transfers where we never observed the "active" phase. The `primed`
+      // guard suppresses notifications for toasts that were already on the
+      // page when the content script loaded.
+      const doneRising   = primed && isDone   && !prev[kind].done;
+      const errorRising  = primed && isError  && !prev[kind].error;
+      const cancelRising = primed && isCancel && !prev[kind].cancel;
+
+      // Cancel wins over everything — user cancellation never notifies.
+      if (cancelRising) {
         state[kind] = 'done';
-        log(kind, 'active -> done (saw "complete" text)');
-        notify(kind);
+        log(kind, '-> cancelled (no notification)');
+      } else if (errorRising && !cancelLatched[kind]) {
+        state[kind] = 'done';
+        log(kind, '-> failed (explicit error text)');
+        notify(kind, 'failed');
+      } else if (doneRising && !cancelLatched[kind]) {
+        state[kind] = 'done';
+        log(kind, '-> done (saw "complete" text)');
+        notify(kind, 'success');
+      } else if (doneRising || errorRising) {
+        // Done/error text appeared but cancel was latched — consume it.
+        state[kind] = 'done';
+        log(kind, '-> terminal after cancel (no notification)');
       } else if (isActive && state[kind] !== 'active') {
         log(kind, '-> active');
         state[kind] = 'active';
-      } else if (state[kind] === 'active' && !isActive && !isDone) {
+      } else if (state[kind] === 'active' && !isActive && !isDone && !isError && !isCancel) {
+        // Progress text disappeared while we knew a transfer was active.
+        // Three interpretations:
+        //   - Cancel was latched         -> suppress (user cancelled)
+        //   - Offline / connection lost  -> treat as failure
+        //   - Otherwise                  -> treat as success
         state[kind] = 'done';
-        log(kind, 'active -> done (progress text disappeared)');
-        notify(kind);
-      } else if (!isActive && !isDone && state[kind] === 'done') {
+        if (cancelLatched[kind]) {
+          log(kind, 'active -> cancelled (progress vanished after cancel)');
+        } else if (isOffline) {
+          log(kind, 'active -> failed (progress vanished while offline)');
+          notify(kind, 'failed');
+        } else {
+          log(kind, 'active -> done (progress text disappeared)');
+          notify(kind, 'success');
+        }
+      } else if (!isActive && !isDone && !isError && !isCancel && state[kind] === 'done') {
         state[kind] = 'idle';
+        cancelLatched[kind] = false;
       }
+
+      prev[kind].done   = isDone;
+      prev[kind].error  = isError;
+      prev[kind].cancel = isCancel;
     }
+    primed = true;
   }
+
+  // Detect cancellation from the user's click on Drive's cancel / close
+  // controls in the progress panel. This is necessary because Drive often
+  // removes the toast on cancel WITHOUT showing explicit "cancelled" text,
+  // so text-pattern matching alone can't distinguish a cancel from a real
+  // completion. We only latch for kinds currently in the 'active' state, so
+  // a stray "Cancel" click elsewhere on the page won't suppress a real
+  // completion later.
+  const CANCEL_LABEL_RE = /\bcancel(?!l?ed)\b|\bstop(?!ped)\b|\bremove\s+from\s+(upload|download)/i;
+  document.addEventListener(
+    'click',
+    (e) => {
+      const el = e.target && e.target.closest && e.target.closest('button, [role="button"], [aria-label]');
+      if (!el) return;
+      const label = (el.getAttribute('aria-label') || el.textContent || '').trim();
+      if (!label || !CANCEL_LABEL_RE.test(label)) return;
+      for (const kind of ['upload', 'download']) {
+        if (state[kind] === 'active') {
+          cancelLatched[kind] = true;
+          log(kind, 'cancel latched from click:', label.slice(0, 60));
+        }
+      }
+    },
+    true
+  );
 
   intervalId = setInterval(tick, SCAN_INTERVAL_MS);
 
@@ -175,15 +314,21 @@
     for (const kind of ['upload', 'download']) {
       result.matched[kind] = {
         active: ACTIVE_PATTERNS[kind].filter((re) => re.test(lower)).map(String),
-        done:   DONE_PATTERNS[kind].filter((re) => re.test(lower)).map(String)
+        done:   DONE_PATTERNS[kind].filter((re) => re.test(lower)).map(String),
+        error:  ERROR_PATTERNS[kind].filter((re) => re.test(lower)).map(String),
+        cancel: CANCEL_PATTERNS[kind].filter((re) => re.test(lower)).map(String)
       };
     }
+    result.offline = {
+      navigatorOnline: navigator.onLine,
+      matchedOfflineText: OFFLINE_PATTERNS.filter((re) => re.test(lower)).map(String)
+    };
     return result;
   };
 
-  window.__driveAlterTestNotify = (kind = 'upload') => {
-    log('manual test notification:', kind);
+  window.__driveAlterTestNotify = (kind = 'upload', status = 'success') => {
+    log('manual test notification:', kind, status);
     lastNotifiedAt[kind] = 0; // bypass cooldown
-    notify(kind);
+    notify(kind, status);
   };
 })();

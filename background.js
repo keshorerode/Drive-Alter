@@ -13,15 +13,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   const kind = msg.kind === 'download' ? 'Download' : 'Upload';
-  const id = `drive-${msg.kind}-${Date.now()}`;
+  const failed = msg.status === 'failed';
+  const id = `drive-${msg.kind}-${failed ? 'failed' : 'done'}-${Date.now()}`;
+
+  const title = failed ? `${kind} failed` : `${kind} complete`;
+  const message = failed
+    ? `Your Google Drive ${kind.toLowerCase()} did not finish. Check the Drive tab for details.`
+    : `Your Google Drive ${kind.toLowerCase()} has finished.`;
 
   chrome.notifications.create(
     id,
     {
       type: 'basic',
       iconUrl: 'icons/icon128.png',
-      title: `${kind} complete`,
-      message: `Your Google Drive ${kind.toLowerCase()} has finished.`,
+      title,
+      message,
       priority: 2,
       requireInteraction: true
     },
