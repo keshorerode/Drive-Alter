@@ -146,17 +146,6 @@ The extension requests only what it needs:
 
 ---
 
-## Roadmap / ideas
-
-- [x] Sound option (play a chime on completion) — built-in two-note chime
-- [x] Failed-upload detection (notify if a transfer errors out)
-- [x] Settings popup (toggle sound, change notification text)
-- [ ] Publish to Chrome Web Store for one-click install
-- [x] Firefox port (Manifest V3 with event-page background)
-- [ ] Publish to addons.mozilla.org with a signed build
-
----
-
 ## Contributing
 
 Pull requests welcome!
