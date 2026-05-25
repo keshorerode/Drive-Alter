@@ -3,15 +3,384 @@
   <head>
     <meta charset="utf-8" />
     <style>
-      body { font-family: system-ui, sans-serif; width: 240px; padding: 12px; }
-      h1 { font-size: 14px; margin: 0 0 8px; }
-      p { font-size: 12px; color: #444; margin: 0 0 8px; }
-      .ok { color: #137333; }
+      :root {
+        --bg:        #ffffff;
+        --surface:   #f8f9fb;
+        --surface-2: #ffffff;
+        --border:    #e3e5e8;
+        --border-2:  #d3d6da;
+        --text:      #1f1f1f;
+        --text-2:    #5f6368;
+        --text-3:    #80868b;
+        --accent:    #1a73e8;
+        --success:   #137333;
+        --danger:    #c5221f;
+        --upload:    #1a73e8;
+        --download:  #8430ce;
+        --shadow:    0 1px 2px rgba(0,0,0,.04), 0 1px 3px rgba(0,0,0,.06);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg:        #1f1f1f;
+          --surface:   #2a2a2a;
+          --surface-2: #303030;
+          --border:    #3c3c3c;
+          --border-2:  #505050;
+          --text:      #e8eaed;
+          --text-2:    #bdc1c6;
+          --text-3:    #9aa0a6;
+          --accent:    #8ab4f8;
+          --success:   #81c995;
+          --danger:    #f28b82;
+          --upload:    #8ab4f8;
+          --download:  #c58af9;
+          --shadow:    0 1px 2px rgba(0,0,0,.3), 0 1px 3px rgba(0,0,0,.4);
+        }
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+        width: 340px;
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-size: 13px;
+        line-height: 1.4;
+      }
+
+      /* ─── Header ────────────────────────────────────────── */
+      .header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 16px 12px;
+        border-bottom: 1px solid var(--border);
+      }
+      .header img {
+        width: 28px;
+        height: 28px;
+        border-radius: 6px;
+      }
+      .header-text { flex: 1; min-width: 0; }
+      .header h1 {
+        font-size: 14px;
+        font-weight: 600;
+        margin: 0;
+        letter-spacing: -0.1px;
+      }
+      .header .live {
+        font-size: 11px;
+        color: var(--success);
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        margin-top: 1px;
+      }
+      .live::before {
+        content: '';
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--success);
+        box-shadow: 0 0 0 0 currentColor;
+        animation: pulse 2s infinite;
+      }
+      @keyframes pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(19,115,51,.5); }
+        70%  { box-shadow: 0 0 0 6px rgba(19,115,51,0); }
+        100% { box-shadow: 0 0 0 0 rgba(19,115,51,0); }
+      }
+
+      /* ─── Content ───────────────────────────────────────── */
+      .content { padding: 12px 14px 14px; }
+
+      .card {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 11px 12px;
+        margin-bottom: 10px;
+        box-shadow: var(--shadow);
+        transition: border-color .15s ease;
+      }
+      .card:hover { border-color: var(--border-2); }
+      .card-header {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .card-header .icon {
+        width: 22px;
+        height: 22px;
+        border-radius: 6px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 12px;
+        color: #fff;
+        flex-shrink: 0;
+      }
+      .card-header .title {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--text);
+        flex: 1;
+      }
+      .card.upload-success .icon  { background: var(--upload); }
+      .card.upload-failed .icon   { background: var(--upload);   position: relative; }
+      .card.upload-failed .icon::after,
+      .card.download-failed .icon::after {
+        content: '';
+        position: absolute;
+        right: -3px; top: -3px;
+        width: 9px; height: 9px;
+        border-radius: 50%;
+        background: var(--danger);
+        border: 2px solid var(--surface-2);
+      }
+      .card.download-success .icon { background: var(--download); }
+      .card.download-failed .icon  { background: var(--download); position: relative; }
+
+      /* ─── Sound toggle ──────────────────────────────────── */
+      .sound-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+      }
+      .sound-label {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .sound-icon {
+        width: 28px;
+        height: 28px;
+        border-radius: 8px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 14px;
+      }
+
+      /* iOS-style switch */
+      .switch {
+        position: relative;
+        display: inline-block;
+        width: 36px;
+        height: 20px;
+        flex-shrink: 0;
+      }
+      .switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .slider {
+        position: absolute;
+        cursor: pointer;
+        inset: 0;
+        background: var(--border-2);
+        border-radius: 20px;
+        transition: background .2s;
+      }
+      .slider::before {
+        position: absolute;
+        content: "";
+        height: 16px;
+        width: 16px;
+        left: 2px;
+        top: 2px;
+        background: #fff;
+        border-radius: 50%;
+        transition: transform .2s;
+        box-shadow: 0 1px 2px rgba(0,0,0,.2);
+      }
+      .switch input:checked + .slider { background: var(--success); }
+      .switch input:checked + .slider::before { transform: translateX(16px); }
+      .switch input:focus-visible + .slider {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      /* ─── Inputs ────────────────────────────────────────── */
+      .field { margin-top: 7px; }
+      .field:first-of-type { margin-top: 0; }
+      .field-label {
+        display: block;
+        font-size: 10.5px;
+        font-weight: 500;
+        color: var(--text-3);
+        text-transform: uppercase;
+        letter-spacing: 0.4px;
+        margin-bottom: 3px;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 6px 9px;
+        font-size: 12.5px;
+        font-family: inherit;
+        color: var(--text);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        transition: border-color .15s, box-shadow .15s, background .15s;
+      }
+      input[type="text"]::placeholder { color: var(--text-3); }
+      input[type="text"]:hover { border-color: var(--border-2); }
+      input[type="text"]:focus {
+        outline: none;
+        background: var(--surface-2);
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(26,115,232,.15);
+      }
+
+      /* ─── Footer ────────────────────────────────────────── */
+      .footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px 12px;
+        border-top: 1px solid var(--border);
+        background: var(--surface);
+      }
+      #saveStatus {
+        font-size: 11.5px;
+        color: var(--success);
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        min-height: 14px;
+        opacity: 0;
+        transition: opacity .2s;
+      }
+      #saveStatus.show { opacity: 1; }
+      #saveStatus::before {
+        content: '✓';
+        font-weight: 700;
+      }
+      button {
+        font-family: inherit;
+        font-size: 11.5px;
+        font-weight: 500;
+        padding: 5px 11px;
+        border: 1px solid var(--border-2);
+        background: var(--surface-2);
+        color: var(--text-2);
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background .15s, color .15s, border-color .15s;
+      }
+      button:hover {
+        background: var(--surface);
+        color: var(--text);
+        border-color: var(--text-3);
+      }
+      button:active { transform: translateY(1px); }
     </style>
   </head>
   <body>
-    <h1>Drive Alter</h1>
-    <p class="ok">Active on drive.google.com</p>
-    <p>You'll get a desktop notification when your uploads or downloads finish.</p>
+
+    <div class="header">
+      <img src="icons/icon48.png" alt="" />
+      <div class="header-text">
+        <h1>Drive Alter</h1>
+        <div class="live">Active on drive.google.com</div>
+      </div>
+    </div>
+
+    <div class="content">
+
+      <div class="card">
+        <div class="sound-row">
+          <label class="sound-label" for="soundEnabled">
+            <span class="sound-icon" aria-hidden="true">🔔</span>
+            <span>
+              <div style="font-weight: 600; font-size: 12.5px;">Notification chime</div>
+              <div style="font-size: 11px; color: var(--text-3); margin-top: 1px;">Plays a short ding when a transfer ends</div>
+            </span>
+          </label>
+          <label class="switch">
+            <input type="checkbox" id="soundEnabled" />
+            <span class="slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card upload-success">
+        <div class="card-header">
+          <div class="icon" aria-hidden="true">↑</div>
+          <div class="title">Upload complete</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="uploadSuccessTitle">Title</label>
+          <input type="text" id="uploadSuccessTitle" placeholder="Upload complete" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="uploadSuccessMessage">Message</label>
+          <input type="text" id="uploadSuccessMessage" placeholder="Your Google Drive upload has finished." />
+        </div>
+      </div>
+
+      <div class="card upload-failed">
+        <div class="card-header">
+          <div class="icon" aria-hidden="true">↑</div>
+          <div class="title">Upload failed</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="uploadFailedTitle">Title</label>
+          <input type="text" id="uploadFailedTitle" placeholder="Upload failed" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="uploadFailedMessage">Message</label>
+          <input type="text" id="uploadFailedMessage" placeholder="Your Google Drive upload did not finish. Check the Drive tab for details." />
+        </div>
+      </div>
+
+      <div class="card download-success">
+        <div class="card-header">
+          <div class="icon" aria-hidden="true">↓</div>
+          <div class="title">Download complete</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="downloadSuccessTitle">Title</label>
+          <input type="text" id="downloadSuccessTitle" placeholder="Download complete" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="downloadSuccessMessage">Message</label>
+          <input type="text" id="downloadSuccessMessage" placeholder="Your Google Drive download has finished." />
+        </div>
+      </div>
+
+      <div class="card download-failed">
+        <div class="card-header">
+          <div class="icon" aria-hidden="true">↓</div>
+          <div class="title">Download failed</div>
+        </div>
+        <div class="field">
+          <label class="field-label" for="downloadFailedTitle">Title</label>
+          <input type="text" id="downloadFailedTitle" placeholder="Download failed" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="downloadFailedMessage">Message</label>
+          <input type="text" id="downloadFailedMessage" placeholder="Your Google Drive download did not finish. Check the Drive tab for details." />
+        </div>
+      </div>
+
+    </div>
+
+    <div class="footer">
+      <span id="saveStatus">Saved</span>
+      <button id="resetBtn" type="button">Reset to defaults</button>
+    </div>
+
+    <script src="popup.js"></script>
   </body>
 </html>

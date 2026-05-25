@@ -121,7 +121,7 @@ The extension requests only what it needs:
 | Permission | Why |
 |---|---|
 | `notifications` | To show the OS-level toast when a transfer completes |
-| `storage` | Reserved for future settings (e.g. mute/sound toggle); currently unused |
+| `storage` | Persists your settings (sound toggle, custom notification text) across browser sessions |
 | `https://drive.google.com/*` | To inject the watcher script on Drive pages only |
 
 **No data leaves your computer.** The extension doesn't make network requests, doesn't read file contents, doesn't track usage, and has no analytics.
@@ -132,8 +132,7 @@ The extension requests only what it needs:
 
 - [x] Sound option (play a chime on completion) — built-in two-note chime
 - [x] Failed-upload detection (notify if a transfer errors out)
-- [ ] Localized text patterns (Hindi, Spanish, French, German, Japanese)
-- [ ] Settings popup (toggle sound, change notification text)
+- [x] Settings popup (toggle sound, change notification text)
 - [ ] Publish to Chrome Web Store for one-click install
 - [ ] Firefox port (Manifest V3 is supported)
 

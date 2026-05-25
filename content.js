@@ -93,6 +93,22 @@
     /unable to connect/i
   ];
 
+  // Sound toggle, mirrored from chrome.storage.sync. Read once at load and
+  // kept in sync via the onChanged listener. Defaults to enabled — if the
+  // storage read is slow, the first chime might play before the value
+  // arrives, which is the safe direction.
+  let soundEnabled = true;
+  try {
+    chrome.storage?.sync?.get({ soundEnabled: true }, (data) => {
+      if (!chrome.runtime?.lastError) soundEnabled = !!data.soundEnabled;
+    });
+    chrome.storage?.onChanged?.addListener((changes, area) => {
+      if (area === 'sync' && changes.soundEnabled) {
+        soundEnabled = !!changes.soundEnabled.newValue;
+      }
+    });
+  } catch { /* extension context may be invalidated; soundEnabled stays true */ }
+
   const state = { upload: 'idle', download: 'idle' };
   const lastNotifiedAt = { upload: 0, download: 0 };
   // Previous-tick flags so we can detect the rising edge of done/error text
@@ -139,6 +155,7 @@
   // in Manifest V3. May be silenced by Chrome's autoplay policy if the
   // user hasn't interacted with the Drive tab recently.
   function playChime() {
+    if (!soundEnabled) return;
     try {
       const Ctx = window.AudioContext || window.webkitAudioContext;
       if (!Ctx) return;
