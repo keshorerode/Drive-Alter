@@ -31,7 +31,9 @@ Google Drive shows transfer progress in a small popup at the bottom-right of the
 
 ## Installation (developer mode)
 
-> The extension isn't on the Chrome Web Store yet, so for now you load it manually. Takes 30 seconds.
+> The extension isn't on the Chrome Web Store / addons.mozilla.org yet, so for now you load it manually. Takes 30 seconds.
+
+### Chrome / Edge / Brave (any Chromium browser)
 
 1. **Download** this repo:
    - Click the green **Code** button on GitHub → **Download ZIP**, then extract it
@@ -42,7 +44,23 @@ Google Drive shows transfer progress in a small popup at the bottom-right of the
 5. Select the `Drive-Alter` folder you downloaded
 6. You should see the **Drive Alter** card appear with a blue "D" icon
 
-That's it — open `drive.google.com`, start an upload or download, and you'll get a Windows/Mac notification when it finishes.
+That's it — open `drive.google.com`, start an upload or download, and you'll get a desktop notification when it finishes.
+
+### Firefox
+
+Firefox requires its own manifest variant ([`manifest.firefox.json`](manifest.firefox.json)) because Mozilla's MV3 prefers the event-page background style and needs an extension ID. To load it:
+
+1. **Download / clone** the repo as above.
+2. **Rename files** so Firefox sees the right manifest:
+   - Rename `manifest.json` → `manifest.chrome.json`
+   - Rename `manifest.firefox.json` → `manifest.json`
+3. Open Firefox and go to `about:debugging` → **This Firefox** → **Load Temporary Add-on…**
+4. Select the renamed `manifest.json` inside the project folder.
+5. The Drive Alter icon appears in the toolbar.
+
+> ⚠️ "Load Temporary Add-on" only persists until Firefox closes. For permanent installs without a Mozilla-signed build, you need Firefox Developer Edition or Nightly with `xpinstall.signatures.required` set to `false` in `about:config`.
+
+> ⚠️ Firefox doesn't honor `requireInteraction: true` — notifications auto-dismiss after a few seconds instead of waiting for a click. Everything else (chime, custom text, settings popup) behaves identically.
 
 ---
 
@@ -72,7 +90,9 @@ The extension is intentionally tiny — three files do all the work:
 
 | File | Role |
 |---|---|
-| `manifest.json` | Chrome extension config (Manifest V3) |
+| `manifest.json` | Extension config for Chromium browsers (Manifest V3) |
+| `manifest.firefox.json` | Firefox variant — event-page background and `browser_specific_settings.gecko` ID |
+| `defaults.js` | Single source of truth for default notification text and storage keys |
 | `content.js` | Runs on every Drive page. Polls the visible text every second to detect "uploading…", "X min left", and "upload complete" phrases. Tracks a state machine: `idle → active → done`, and fires a message on completion. |
 | `background.js` | Service worker. Receives messages from `content.js` and calls `chrome.notifications.create()` to show the OS-level toast. Also wires up click-to-focus-tab. |
 | `popup.html` | The small popup shown when you click the toolbar icon. Purely informational. |
@@ -132,7 +152,8 @@ The extension requests only what it needs:
 - [x] Failed-upload detection (notify if a transfer errors out)
 - [x] Settings popup (toggle sound, change notification text)
 - [ ] Publish to Chrome Web Store for one-click install
-- [ ] Firefox port (Manifest V3 is supported)
+- [x] Firefox port (Manifest V3 with event-page background)
+- [ ] Publish to addons.mozilla.org with a signed build
 
 ---
 

@@ -1,0 +1,37 @@
+{
+  "manifest_version": 3,
+  "name": "Drive Alter",
+  "version": "0.1.0",
+  "description": "Notifies you when Google Drive uploads or downloads finish, even when you're on another tab.",
+  "permissions": ["notifications", "storage"],
+  "host_permissions": [
+    "https://drive.google.com/*"
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "drive-alter@keshorerode.github.io",
+      "strict_min_version": "115.0"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"],
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://drive.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "Drive Alter",
+    "default_popup": "popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}
